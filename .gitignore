@@ -1,0 +1,14 @@
+# Editor noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local-only drafts that aren't ready to ship
+drafts/
+*.draft.md
+
+# Secrets — never commit
+*.env
+.env.*
