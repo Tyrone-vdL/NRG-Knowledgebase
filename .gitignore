@@ -12,3 +12,13 @@ drafts/
 # Secrets — never commit
 *.env
 .env.*
+.env
+# ...but keep the template (no secrets in it)
+!.env.example
+
+# Bot runtime / dependencies
+node_modules/
+logs/
+bot-logs/
+*.bak
+*.tar.gz
