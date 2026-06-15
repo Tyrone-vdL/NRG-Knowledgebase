@@ -7,7 +7,7 @@ updated: 2026-06-10
 
 # NRG Knowledge Base — Master Index
 
-How this wiki is organized and what it covers. As of 2026-06-10 the wiki holds **~164 pages covering 95%+ of NRG's reference library** (190+ source documents).
+How this wiki is organized and what it covers. As of 2026-06-15 the wiki holds **~165 pages covering 95%+ of NRG's reference library** (190+ source documents).
 
 **Source root (raw documents):** see `config.md` — currently `C:\Users\tyron\OneDrive\Documents\Kampfire.Digital\NRG Knowledge Base\`
 
@@ -39,7 +39,7 @@ Coverage by category (counts approximate):
 
 | Category | Pages | What's in it |
 |---|---|---|
-| NCC core | 19 | NCC 2022 Vol 1/Vol 2(H6)/Housing Provisions/Consolidated PRs, Amdt 1, NCC 2025 PCD ×2, handbooks, livable housing |
+| NCC core | 20 | NCC 2022 Vol 1/Vol 2(H6)/Housing Provisions/Consolidated PRs, Amdt 1, NCC 2025 PCD ×2, handbooks, livable housing, **NCC 2019 Vol 2 floor provisions (surgical)** |
 | State regs | 18 | QLD/VIC/ACT/TAS Building Acts (key sections in full: QLD s61/s81), QDC 4.1 + MP4.1, ACT Appendix |
 | NatHERS | 17 | Assessor Handbook 2024 (deep extract), Technical Note Oct 2024 (current), load limits, TPA rulings, superseded tech notes (marked) |
 | 7-Star | 17 | Fact sheets, upgrade guides, Acacia/Telopea reference designs across 3 climates with per-city spec differences |
@@ -82,6 +82,10 @@ When a question lands here, say so and point at the raw file.
 ## Deliberately skipped — superseded editions (`Z - NCC/_ARCHIVE/`, 15 files)
 
 BCA 1996/2009, NCC 2015/2016/2019 volumes and guides. Historic editions: only relevant for buildings approved under those codes. Raw PDFs remain available; ingest on demand.
+
+> **Partial ingest (2026-06-15):** NCC 2019 Volume Two **Part 3.12.1.5 Floors + Table 3.12.1.4**
+> have been surgically extracted into [[sources/src-ncc-2019-volume-two-amdt1]] (closed a live floor-R-value
+> gap). The rest of NCC 2019 Vol 2 remains un-ingested.
 
 ---
 
