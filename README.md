@@ -2,6 +2,8 @@
 
 Production knowledge-base bot for NRG. Runs on a DigitalOcean droplet under PM2.
 
+> **New here?** Read [`CLAUDE.md`](CLAUDE.md) for the project orientation — mission, architecture, what's been done, and open items.
+
 ## Repo layout & deploy flow (v3+)
 
 This private repo mirrors the droplet's `/opt/nrg-bot` exactly: bot files at the root, `wiki/` alongside. **The canonical wiki master lives in `kampfire-digital/NRG Knowledge Base/wiki/` on Choppa's laptop** (where Claude maintains it next to `raw/` and `ingest/`); `wiki/` here is a synced copy.
