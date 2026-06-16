@@ -1,0 +1,11 @@
+# NRG bot token/quality benchmark set — representative of live #wiki-bot traffic.
+# Spans: simple figure lookup, multi-page synthesis, NCC-2019 (newly ingested),
+# a known gap (denial path), and the figure-bearing answers used as the quality guard.
+Monument solar absorptance
+Best insulation for roof in Tasmania
+What is the floor insulation requirement for Queensland climate zone 2 class 1 dwelling NCC2019
+Is the total R value required for an unenclosed subfloor in climate zone 2 following NCC 2019, R1.0?
+What are the best BRADNAMS single glazed U & SHGC values that you are aware of?
+Why do lighter coloured window frames assist in reducing the cooling loads in Climate zone 2?
+If a window consists of 3 equal sized panels but only 2 panels are openable awnings, what percentage of operability would I input in my FirstRate5 model?
+To apply the Queensland star credit, does the floor of the outdoor area need to be 12m2 or can we use the credit if only the roof cover is 12m2?
