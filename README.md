@@ -4,21 +4,27 @@ Production knowledge-base bot for NRG. Runs on a DigitalOcean droplet under PM2.
 
 > **New here?** Read [`CLAUDE.md`](CLAUDE.md) for the project orientation — mission, architecture, what's been done, and open items.
 
-## Repo layout & deploy flow (v3+)
+## Repo layout & deploy flow (v3+, unified)
 
-This private repo mirrors the droplet's `/opt/nrg-bot` exactly: bot files at the root, `wiki/` alongside. **The canonical wiki master lives in `kampfire-digital/NRG Knowledge Base/wiki/` on Choppa's laptop** (where Claude maintains it next to `raw/` and `ingest/`); `wiki/` here is a synced copy.
+**`Tyrone-vdL/NRG-Knowledgebase` (`main`) is the single source of truth.** Since the 2026-06
+unification, the raw source library (`Z - NCC/`, `Z - PRODUCT INFO/`, …), the `wiki/` layer, and the bot
+code all live and version together in this one repo. The droplet's `/opt/nrg-bot` is a checkout of it.
+(The old `ChoppaTheMegalodon/nrg-discord-bot` repo and the separate laptop "master wiki" are retired —
+don't add new work there.)
 
 Deploy a change:
 
 ```bash
-npm run sync-wiki        # master wiki -> repo wiki/ (skip if only bot.js changed)
-npm run dry-run          # sanity: layers + catalog build clean
-git add -A && git commit -m "..." && git push
-# then on the droplet:
-ssh root@<DROPLET_IP> "cd /opt/nrg-bot && git pull && pm2 restart nrg-bot && pm2 logs nrg-bot --lines 6 --nostream"
+node bot.js --dry-run                       # sanity: layers + catalog build clean
+node bot.js --bench tools/bench-questions.txt   # if it could affect tokens/answers: check cost + quality
+pm2 restart nrg-bot --update-env            # go live on the droplet
+pm2 logs nrg-bot --lines 6 --nostream
+# then version it: push a branch and let the owner review/merge (direct pushes to main are gated)
+git add -A && git commit -m "..." && git push origin <branch>
 ```
 
-Reverse direction (team ingests via Discord write to the droplet's wiki): on the droplet `git add wiki && git commit && git push`, then `git pull` on the laptop and copy back to the master wiki.
+Discord `#ingest` writes new `wiki/sources/*.md` directly on the droplet — commit those the same way so the
+repo stays current. Keep `/opt/nrg-bot` and the repo in sync: restart pm2 to go live **and** commit the same files.
 
 ## What it does
 
