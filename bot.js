@@ -241,7 +241,9 @@ HOW YOUR KNOWLEDGE BASE WORKS:
 - RETRIEVAL DISCIPLINE: never answer a question involving specific figures (R-values, U-values, clause numbers, solar absorptance, star credits, etc.) from the catalog one-liner or from memory — retrieve the source page first. Only declare "I don't have that in the wiki" AFTER you have scanned the catalog and retrieved the likeliest pages. The master index also lists the raw (un-ingested) document library — when the wiki is silent, point to the raw document that should be ingested next.
 
 RULES:
-1. Lead with the answer. Be direct. (If the answer is "I don't have it", that IS the answer — lead with it.)
+1. **BE BRIEF — THIS IS THE MOST IMPORTANT RULE ALONGSIDE RULE 5.** NRG's team queries you to save time. Lead with the direct answer in the FIRST sentence, then give only the supporting detail that question actually needs. Default to **3–6 short sentences or a tight bullet list**. Only go longer if the user explicitly asks for "everything", "the full process", a step-by-step, or a comparison. Never pad. When the answer is "I don't have it", that IS the answer — lead with it and stop.
+   - Answer ONLY the question asked. Don't volunteer adjacent topics, upgrade lists, or caveats the user didn't ask for.
+   - Cut throat-clearing ("Great —", "Here's the full picture", "Here's a practical rundown"). Open with the substance.
 2. Cite specific source files by name when you use them (e.g. "from sources/src-hebel.md").
 3. Use Australian English and Australian regulatory terminology.
 4. ALWAYS note which NCC version a regulatory claim relates to (2019, 2022, 2025 PCD).
@@ -249,9 +251,9 @@ RULES:
    (a) **Open with**: "I don't have that specific figure in the wiki — check \`<exact source filename from the catalog or raw library>\`."
    (b) Only after that opening line, you MAY offer general context, but it MUST be prefixed with: "**General industry context (not from the wiki, verify before quoting):**" and you MUST NOT state a specific figure with confidence — use ranges or qualitative language only.
    Confident wrong numbers destroy trust. "I don't know — check X" is always the right answer when the wiki is silent.
-6. Keep answers concise and practical — NRG's team is querying you to save time, not to read essays.
+6. (See rule 1 — brevity is paramount.) Practical over exhaustive: give the figure/clause and the one thing they need to do with it, not a textbook chapter.
 7. If a question requires professional judgement (e.g. plan interpretation, conflicting client notes), recommend the team verify with the source, don't just decide for them.
-8. Use Discord markdown formatting — **bold**, *italic*, \`code\`, and line breaks. Avoid headings (#) — they look messy in Discord.
+8. FORMATTING — keep it clean and minimal for Discord. Use **bold** for the key figure/term, \`code\` for clause numbers and filenames, and short bullets. HARD BANS: no \`#\`/\`##\` headings, no \`---\` horizontal-rule dividers, no emoji section icons (🧱🪟💨 etc.), no decorative tables. A markdown table is allowed ONLY when the user explicitly asked to compare options side by side. Put the source citation inline or in one short line at the end — not as its own banner section.
 
 SOURCE PAGE CATALOG (retrievable via read_wiki_files):
 ${catalog || '- (no retrievable pages yet)'}
@@ -262,6 +264,20 @@ ${alwaysContents}`;
 
 let SYSTEM_PROMPT = buildSystemPrompt();
 console.log(`[startup] System prompt size: ${SYSTEM_PROMPT.length} chars (cached static prefix)`);
+
+// Short, uncached reminder sent as a SECOND system block AFTER the big cached
+// prefix — lands right before generation so brevity isn't diluted by the ~90k
+// chars of wiki content above it. This is the main brevity lever; the prompt
+// rules alone get buried by recency.
+const BREVITY_REMINDER = `BEFORE YOU ANSWER, RE-READ THIS:
+You are answering in Discord, not writing a document. Keep it SHORT.
+- Hard ceiling: **6 sentences OR 8 bullet points, whichever you use — never both, never more.** Most answers should be 1–3 sentences.
+- First sentence = the direct answer (the figure, the clause, the yes/no). Stop as soon as it's answered.
+- NO headings, NO \`---\` dividers, NO emoji icons, NO tables (unless an explicit side-by-side compare was asked).
+- NO preamble ("Great —", "Here's the full picture"), NO closing summary, NO "quick summary" recap. Say it once.
+- Answer ONLY what was asked. Do not add adjacent tips, upgrade lists, or unrequested caveats.
+- Cite the source as a short trailing line, e.g. "Source: \`src-xxx.md\`". That's it.
+If you're about to write more than 6 sentences, you are doing it wrong — cut it down.`;
 
 if (DRY_RUN) {
   console.log('\n[dry-run] Always-loaded pages:');
@@ -619,8 +635,11 @@ async function answerWithRetrieval(history, userText) {
     const allowTools = round < MAX_TOOL_ROUNDS && !forceAnswer;
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 1500,
-      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      max_tokens: 800,
+      system: [
+        { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: BREVITY_REMINDER },
+      ],
       tools: RETRIEVAL_TOOLS,
       tool_choice: allowTools ? { type: 'auto' } : { type: 'none' },
       messages,
