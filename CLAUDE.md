@@ -126,10 +126,22 @@ pm2 logs nrg-bot      /    tail -f logs/out.log
 
 Reverse-chronological; see `wiki/log.md` for the wiki-level detail.
 
-- **Token-spend reduction + coverage gap register** (branch `token-reduction-and-gap-register`, *awaiting
-  review*): section-level retrieval, `products/index.md` demoted to retrievable, adaptive round cap, fetch
-  counters + `--bench` harness. Measured **$0.0863 → $0.0557/answer (−35% all-in, ~−43% warm-cache)** with no
-  quality regression. Added `wiki/coverage-gaps.md`.
+- **Self-learning + auto-sync loop — LIVE** (PR #2, merged): the bot captures 👍/👎 + reply-corrections to
+  `bot-logs/feedback.jsonl` (DATA only — never auto-edits the wiki); `tools/mine-gaps.mjs` ranks gaps into
+  `bot-logs/coverage-gaps-queue.md`; `tools/deploy-sync.sh` (systemd `nrg-sync.timer`, every 15 min) does gated
+  ff-only auto-deploy + telemetry push to the `droplet-telemetry` branch; `tools/post-digest.mjs`
+  (`nrg-digest.timer`, Wed 08:00 Sydney) posts a `#bot-ops` digest. See `OBJECTIVE.md` + `deploy/README.md`.
+- **Droplet cutover:** `/opt/nrg-bot` repointed from the dead ChoppaTheMegalodon repo to NRG-Knowledgebase via a
+  write deploy key + `droplet-telemetry` worktree. **Deploy flow is now: merge to `main` → the droplet
+  auto-ff-pulls within 15 min, runs `node bot.js --dry-run` as a gate, restarts, rolls back on failure.** The
+  old scp/manual flow is retired.
+- **NCC-version discipline (system-prompt rule 4):** the bot now asks which NCC version applies when a question
+  doesn't state it, and never cross-cites another version's rules (the root-cause fix for the wrong QLD CZ2
+  floor answer). Requested twice by Will.
+- **Token-spend reduction + coverage gap register** (merged, PR #1): section-level retrieval, `products/index.md`
+  demoted to retrievable, adaptive round cap, fetch counters + `--bench` harness. Measured
+  **$0.0863 → $0.0557/answer (−35% all-in, ~−43% warm-cache)** with no quality regression. Added
+  `wiki/coverage-gaps.md`.
 - **KB coverage audit** → `wiki/coverage-gaps.md`: QLD/NSW/VIC/ACT workable; **SA/WA/NT critically thin**;
   state NCC schedules + several Building Acts aren't in the repo (flagged for external sourcing).
 - **NCC 2019 Vol 2 floor provisions ingested** (`wiki/sources/src-ncc-2019-volume-two-amdt1.md`) — Table
@@ -144,13 +156,24 @@ Reverse-chronological; see `wiki/log.md` for the wiki-level detail.
 
 ## 7. Current state & open items
 
-- **Branch `token-reduction-and-gap-register` is pushed and awaiting the owner's review** (not merged to `main`).
+> **Resume here.** This file is the repo-resident system state — accurate as of the loop going live (2026-06-17).
+> The per-client *session & decision history* (and non-repo items like billing) lives in the operator's Work Life
+> memory and auto-loads when Claude Code is started from the `Work Life` directory.
+
+- **The self-learning loop is LIVE and running** — both systemd timers (`nrg-sync`, `nrg-digest`) enabled on the
+  droplet, `#bot-ops` webhook wired, repo/droplet/local clone all in sync on `main`. Nothing here is "awaiting review".
+- **Open — live smoke test:** confirm a 👍/👎 (or reply-correction) on a *fresh* answer writes a line to
+  `bot-logs/feedback.jsonl` (the in-memory `answerFeedback` map only tracks answers given since the last restart).
 - **Quality item (open):** the FirstRate5 **combination-window operability** answer is unstable — 60% in the
   original live thread vs 66.7%/67% in benchmarks. It's a genuine domain-convention question; needs a
   **definitive worked example ingested** to pin the bot to one number. Don't assume either value is right.
 - **Ingestion backlog (fillable from the repo now):** full NCC 2019 Vol 2 (beyond floors); BASIX
   energy/thermal calculator xlsx; Bradnams glazing xlsx; NSW/VIC/SA climate-zone-map OCR; re-extract the
-  degraded NCC 2022 Housing Provisions R-value / glazing-factor tables.
+  degraded NCC 2022 Housing Provisions R-value / glazing-factor tables. These now **auto-surface** in
+  `bot-logs/coverage-gaps-queue.md` + the weekly `#bot-ops` digest as the team actually hits them — ingest the
+  top item via the `#ingest` ✅ flow.
+- **Operator (non-repo) items:** $1,500 deposit invoice (signing trigger; see the operator's billing doc);
+  recurring commercial model = decide later.
 - **Needs external sourcing (flagged, not fetched):** SA/WA/NT Building Acts; SA/WA/VIC/TAS/NT NCC state
   schedules; ABCB Whole-of-Home Efficiency-Factor tables; NCC 2025 state-adoption timeline; Class 2 examples.
 - **Future token lever (not yet done):** audit-driven catalog pruning once `logs/fetch-stats.json` has a few
@@ -159,6 +182,11 @@ Reverse-chronological; see `wiki/log.md` for the wiki-level detail.
 ---
 
 ## 8. Pointers
+- `OBJECTIVE.md` — the self-learning loop's objective function + hard guardrails (anti-fabrication, scope, billing).
+- `deploy/README.md` — droplet sync/digest setup + how the loop operates day-to-day.
+- `tools/deploy-sync.sh` — the auto-deploy + telemetry-push script (run by `nrg-sync.timer`).
+- `tools/mine-gaps.mjs` — mines `bot-logs/` → ranked `coverage-gaps-queue.md` + `metrics.json`.
+- `tools/post-digest.mjs` — posts the weekly `#bot-ops` digest (run by `nrg-digest.timer`).
 - `wiki/CLAUDE.md` — how to answer from the wiki + ingest sources.
 - `wiki/coverage-gaps.md` — jurisdiction coverage matrix + prioritised gaps.
 - `wiki/log.md` — append-only operations log (ingests, changes).
