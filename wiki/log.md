@@ -4,6 +4,22 @@ Append-only record of every wiki operation. Most recent at top.
 
 ---
 
+## [2026-06-16] add | Coverage gap register + bot token-spend reduction
+
+Created [[coverage-gaps]] — a standing jurisdiction coverage matrix + tiered gap list (retrievable,
+not always-loaded). Headline: QLD/NSW/VIC/ACT workable; **SA/WA/NT critically thin** (Building Acts +
+state NCC schedules not even in the repo — flagged for external sourcing). Pointer added to index.md.
+
+Bot token tuning (bot.js): demoted `products/index.md` to retrievable; **section-level retrieval**
+(fetch `path#Section` of large pages, section lists shown in the catalog for pages ≥8000 chars);
+adaptive round cap (`MAX_FETCH_PAGES`); per-page fetch counters (`logs/fetch-stats.json`, surfaced in
+`/status`) for future catalog pruning; added a `--bench` replay harness (`tools/bench-questions.txt`).
+Measured on the 8-question live-traffic benchmark: **$0.0863 → $0.0557/answer all-in (−35%);
+~−43% warm-cache.** Quality guard passed — figure-bearing answers unchanged (Monument 0.73, NCC 2019
+CZ2 floor R1.0, Tasmania CZ7/8 R-values, QLD outdoor-living 12 m²). **Open quality item (pre-existing,
+not from this change):** the FirstRate5 combination-window operability answer is unstable — 60% in the
+original live thread vs 66.7%/67% in both benchmarks; needs a definitive worked example ingested to pin it.
+
 ## [2026-06-15] ingest | NCC 2019 Volume Two (Amdt 1) — Part 3.12.1.5 Floors (surgical)
 
 Ingested the floor energy-efficiency provisions from `Z - NCC/_ARCHIVE/NCC_2019_Volume_Two_Amendment 1.pdf` (593 pages, via `pdf-parse`). Created [[sources/src-ncc-2019-volume-two-amdt1]] with **Table 3.12.1.4** (suspended-floor minimum Total R-Value per climate zone — CZ2 = **R1.0 up**), full clause **3.12.1.5(a)–(e)** (in-slab heating edge R≥1.0 + under-slab R≥2.0, CZ8 slab, convection barrier, bathroom exemption), and the inherent base-R tables **3.12.1.5a (timber)** / **3.12.1.5b (concrete)** incl. unenclosed bases (timber R0.39 up / concrete R0.34 up). **Closes the gap behind two wrong/incomplete live answers (2026-06-15):** the bot had been answering NCC 2019 floor questions with NCC 2022 Housing Provisions 13.2.6b constructs (subfloor-wall R0.5→R1.5, "under-floor insulation not permitted in CZ2") which **do not exist in NCC 2019** — and failed to confirm the user's correct R1.0 figure for an unenclosed CZ2 subfloor. Surgical extract: only Part 3.12.1.5 captured; rest of NCC 2019 Vol 2 still un-ingested. Triggered by the live #wiki-bot audit (see handoff AUDIT-REPORT).

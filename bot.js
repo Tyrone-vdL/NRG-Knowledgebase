@@ -10,13 +10,17 @@
 // All other channels are ignored.
 //
 // Knowledge architecture (v3 — scales past the 200K context window):
-//   ALWAYS-LOADED (cached): index.md, config.md, concepts/, products/index.md
-//     — the regulatory backbone, sent as a prompt-cached static system prefix.
-//   RETRIEVABLE: sources/, queries/ — listed in a one-line catalog; Claude
-//     pulls only the pages it needs per query via the read_wiki_files tool.
+//   ALWAYS-LOADED (cached): index.md, config.md, concepts/ — the regulatory
+//     backbone, sent as a prompt-cached static system prefix.
+//   RETRIEVABLE: sources/, queries/, products/index.md — listed in a one-line
+//     catalog; Claude pulls only the pages (or, for large pages, the specific
+//     SECTIONS via `path#Section`) it needs per query via read_wiki_files.
 //   Result: per-query cost stays flat (~$0.02-0.05) whether the wiki holds
 //   30 pages or 500. The old design shipped the entire wiki uncached every
 //   query and would overflow the context window past ~100 source pages.
+//   Token tuning (2026-06-16): products/index.md demoted to retrievable;
+//   section-level retrieval; adaptive round cap (MAX_FETCH_PAGES); per-page
+//   fetch counters (logs/fetch-stats.json, surfaced in /status) for pruning.
 //
 // Setup:
 //   1. Copy .env.example to .env and fill in every value
@@ -63,10 +67,24 @@ const MODEL = process.env.MODEL || 'claude-sonnet-4-6';
 const MAX_INGEST_BYTES = parseInt(process.env.MAX_INGEST_BYTES || '20971520', 10); // 20 MB
 const MAX_TOOL_ROUNDS = parseInt(process.env.MAX_TOOL_ROUNDS || '3', 10);
 const MAX_FETCH_CHARS = parseInt(process.env.MAX_FETCH_CHARS || '120000', 10); // per-query retrieval budget
+// Adaptive cap: once a query has fetched this many pages, force a text answer on
+// the next round instead of allowing another retrieval (stops greedy multi-round
+// re-sends of the whole conversation). 0 disables.
+const MAX_FETCH_PAGES = parseInt(process.env.MAX_FETCH_PAGES || '6', 10);
+// Pages at/above this size get their section list shown in the catalog, so the
+// model can fetch `path#Section` instead of the whole page. Small/medium pages
+// don't — section-fetching them saves little, and their markers bloat the cached
+// prefix. Only the big reference volumes (NCC, handbooks) clear this bar.
+const SECTION_CATALOG_MIN_CHARS = parseInt(process.env.SECTION_CATALOG_MIN_CHARS || '8000', 10);
 
 // `node bot.js --dry-run` builds the wiki layers + system prompt, prints stats,
 // and exits before touching Discord or Anthropic. Run before every deploy.
 const DRY_RUN = process.argv.includes('--dry-run');
+
+// `node bot.js --bench [questions.txt]` replays a question set through the real
+// retrieval path (no Discord) and prints per-question token usage + cost — used
+// to measure token-spend changes before/after. Needs ANTHROPIC_API_KEY only.
+const BENCH = process.argv.includes('--bench');
 
 const requiredEnv = {
   DISCORD_TOKEN,
@@ -78,10 +96,14 @@ const requiredEnv = {
   ANTHROPIC_API_KEY,
 };
 for (const [k, v] of Object.entries(requiredEnv)) {
-  if (!v && !DRY_RUN) {
+  if (!v && !DRY_RUN && !BENCH) {
     console.error(`[fatal] Missing required env var: ${k}`);
     process.exit(1);
   }
+}
+if (BENCH && !ANTHROPIC_API_KEY) {
+  console.error('[fatal] --bench requires ANTHROPIC_API_KEY');
+  process.exit(1);
 }
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
@@ -92,7 +114,9 @@ const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 //   RETRIEVABLE:   source/query pages, cataloged + fetched on demand via tool
 // -----------------------------------------------------------------------------
 // Files/dirs (relative to WIKI_ROOT) that are always in context:
-const ALWAYS_FILES = ['index.md', 'config.md', 'products/index.md'];
+// products/index.md was moved to retrievable (2026-06-16) — it's ~12K chars and
+// rarely needed every query; product questions fetch it on demand.
+const ALWAYS_FILES = ['index.md', 'config.md'];
 const ALWAYS_DIRS = ['concepts'];
 // Wiki-root files that are neither loaded nor cataloged:
 const EXCLUDE_FILES = new Set(['CLAUDE.md', 'log.md']);
@@ -138,9 +162,27 @@ function summarizeForCatalog(content) {
   return `${title || '(untitled)'} — ${summary}`.slice(0, 240);
 }
 
+// Split a page into its `## ` (h2) sections so the model can fetch just the part
+// it needs. Returns the frontmatter title + an ordered [{name, body}] list.
+// Content before the first `##` (frontmatter, h1, intro) isn't a section — when a
+// section is requested we re-attach the title for context.
+function parseSections(content) {
+  let title = '';
+  const fm = content.match(/^---\n([\s\S]*?)\n---/);
+  if (fm) { const t = fm[1].match(/^title:\s*(.+)$/m); if (t) title = t[1].trim(); }
+  const sections = [];
+  let cur = null;
+  for (const line of content.split('\n')) {
+    const h = line.match(/^##\s+(.+?)\s*$/);
+    if (h) { cur = { name: h[1].trim(), body: [] }; sections.push(cur); }
+    else if (cur) { cur.body.push(line); }
+  }
+  return { title, sections: sections.map(s => ({ name: s.name, body: s.body.join('\n').trim() })) };
+}
+
 function loadWiki() {
   const always = [];
-  const retrievable = new Map(); // rel path -> { content, catalogLine }
+  const retrievable = new Map(); // rel path -> { content, catalogLine, title, sections }
   for (const full of walkMd(WIKI_ROOT)) {
     const rel = relPath(full);
     if (EXCLUDE_FILES.has(rel) || rel.endsWith('/README.md')) continue;
@@ -148,7 +190,8 @@ function loadWiki() {
     if (isAlwaysLoaded(rel)) {
       always.push({ path: rel, content });
     } else {
-      retrievable.set(rel, { content, catalogLine: summarizeForCatalog(content) });
+      const { title, sections } = parseSections(content);
+      retrievable.set(rel, { content, catalogLine: summarizeForCatalog(content), title, sections });
     }
   }
   return { always, retrievable };
@@ -177,7 +220,14 @@ function buildSystemPrompt() {
     .join('\n');
 
   const catalog = [...wiki.retrievable.entries()]
-    .map(([rel, f]) => `- ${rel} — ${f.catalogLine}`)
+    .map(([rel, f]) => {
+      let line = `- ${rel} — ${f.catalogLine}`;
+      // Large reference pages: list their sections so the model can fetch just one.
+      if (f.content.length >= SECTION_CATALOG_MIN_CHARS && f.sections.length > 1) {
+        line += `  · §${f.sections.map(s => s.name).join(' | ')}`;
+      }
+      return line;
+    })
     .join('\n');
 
   return `You are NRG's internal knowledge base assistant. NRG is an Australian residential energy efficiency consultancy. NRG's team members (Will, Matt, Tara, and contractors in Pakistan) query you for quick answers about Australian energy efficiency regulations and building products.
@@ -187,20 +237,26 @@ DOMAIN: NatHERS, 7-Star ratings, Whole-of-Home (WoH), BASIX (NSW), National Cons
 HOW YOUR KNOWLEDGE BASE WORKS:
 - ALWAYS-LOADED PAGES (full text at the bottom of this prompt): the master index, concept pages (regulatory backbone), and the product catalog.
 - SOURCE PAGE CATALOG (one line per page, below): the full text of these pages is NOT loaded. To read any of them, call the read_wiki_files tool. Batch every page you think you'll need into a SINGLE call — don't fetch one at a time.
+- SECTION ADDRESSING (saves tokens): large reference pages list their sections after a "§" in the catalog. Fetch only the section(s) you need by appending "#Section name" to the path — e.g. "sources/src-ncc2022-housing-provisions-2022.md#Key claims". Use a bare path (whole page) for short datasheets, or when you're unsure which section holds the figure. If a fetched section turns out not to contain the figure, fetch another section or the whole page — never guess the number.
 - RETRIEVAL DISCIPLINE: never answer a question involving specific figures (R-values, U-values, clause numbers, solar absorptance, star credits, etc.) from the catalog one-liner or from memory — retrieve the source page first. Only declare "I don't have that in the wiki" AFTER you have scanned the catalog and retrieved the likeliest pages. The master index also lists the raw (un-ingested) document library — when the wiki is silent, point to the raw document that should be ingested next.
 
 RULES:
-1. Lead with the answer. Be direct. (If the answer is "I don't have it", that IS the answer — lead with it.)
+1. **BE BRIEF — THIS IS THE MOST IMPORTANT RULE ALONGSIDE RULE 5.** NRG's team queries you to save time. Lead with the direct answer in the FIRST sentence, then give only the supporting detail that question actually needs. Default to **3–6 short sentences or a tight bullet list**. Only go longer if the user explicitly asks for "everything", "the full process", a step-by-step, or a comparison. Never pad. When the answer is "I don't have it", that IS the answer — lead with it and stop.
+   - Answer ONLY the question asked. Don't volunteer adjacent topics, upgrade lists, or caveats the user didn't ask for.
+   - Cut throat-clearing ("Great —", "Here's the full picture", "Here's a practical rundown"). Open with the substance.
 2. Cite specific source files by name when you use them (e.g. "from sources/src-hebel.md").
 3. Use Australian English and Australian regulatory terminology.
-4. ALWAYS note which NCC version a regulatory claim relates to (2019, 2022, 2025 PCD).
+4. **NCC VERSION DISCIPLINE.** Energy provisions differ between NCC 2019, NCC 2022, and NCC 2025 (PCD), and answering with the wrong version's rules is a serious error.
+   (a) If the question does NOT state which NCC version applies, ASK the user to confirm (2019, 2022, or 2025) BEFORE giving any version-specific figure, clause, or table — do not assume the latest.
+   (b) When answering about one version, use ONLY that version's provisions. NEVER substitute or cross-cite another version's rules as if they apply (e.g. do not answer an NCC 2019 question with NCC 2022 Housing Provisions constructs).
+   (c) ALWAYS label which NCC version every regulatory claim comes from.
 5. **HARD RULE — NEVER FABRICATE SPECIFICS.** If a specific R-value, U-value, k-value, solar absorptance, NCC clause number, regulation number, or any other numeric/regulatory specific is NOT explicitly stated in the always-loaded pages or in source pages you have retrieved this conversation, your reply MUST:
    (a) **Open with**: "I don't have that specific figure in the wiki — check \`<exact source filename from the catalog or raw library>\`."
    (b) Only after that opening line, you MAY offer general context, but it MUST be prefixed with: "**General industry context (not from the wiki, verify before quoting):**" and you MUST NOT state a specific figure with confidence — use ranges or qualitative language only.
    Confident wrong numbers destroy trust. "I don't know — check X" is always the right answer when the wiki is silent.
-6. Keep answers concise and practical — NRG's team is querying you to save time, not to read essays.
+6. (See rule 1 — brevity is paramount.) Practical over exhaustive: give the figure/clause and the one thing they need to do with it, not a textbook chapter.
 7. If a question requires professional judgement (e.g. plan interpretation, conflicting client notes), recommend the team verify with the source, don't just decide for them.
-8. Use Discord markdown formatting — **bold**, *italic*, \`code\`, and line breaks. Avoid headings (#) — they look messy in Discord.
+8. FORMATTING — keep it clean and minimal for Discord. Use **bold** for the key figure/term, \`code\` for clause numbers and filenames, and short bullets. HARD BANS: no \`#\`/\`##\` headings, no \`---\` horizontal-rule dividers, no emoji section icons (🧱🪟💨 etc.), no decorative tables. A markdown table is allowed ONLY when the user explicitly asked to compare options side by side. Put the source citation inline or in one short line at the end — not as its own banner section.
 
 SOURCE PAGE CATALOG (retrievable via read_wiki_files):
 ${catalog || '- (no retrievable pages yet)'}
@@ -211,6 +267,20 @@ ${alwaysContents}`;
 
 let SYSTEM_PROMPT = buildSystemPrompt();
 console.log(`[startup] System prompt size: ${SYSTEM_PROMPT.length} chars (cached static prefix)`);
+
+// Short, uncached reminder sent as a SECOND system block AFTER the big cached
+// prefix — lands right before generation so brevity isn't diluted by the ~90k
+// chars of wiki content above it. This is the main brevity lever; the prompt
+// rules alone get buried by recency.
+const BREVITY_REMINDER = `BEFORE YOU ANSWER, RE-READ THIS:
+You are answering in Discord, not writing a document. Keep it SHORT.
+- Hard ceiling: **6 sentences OR 8 bullet points, whichever you use — never both, never more.** Most answers should be 1–3 sentences.
+- First sentence = the direct answer (the figure, the clause, the yes/no). Stop as soon as it's answered.
+- NO headings, NO \`---\` dividers, NO emoji icons, NO tables (unless an explicit side-by-side compare was asked).
+- NO preamble ("Great —", "Here's the full picture"), NO closing summary, NO "quick summary" recap. Say it once.
+- Answer ONLY what was asked. Do not add adjacent tips, upgrade lists, or unrequested caveats.
+- Cite the source as a short trailing line, e.g. "Source: \`src-xxx.md\`". That's it.
+If you're about to write more than 6 sentences, you are doing it wrong — cut it down.`;
 
 if (DRY_RUN) {
   console.log('\n[dry-run] Always-loaded pages:');
@@ -445,6 +515,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         { name: 'Core context', value: `${SYSTEM_PROMPT.length.toLocaleString()} chars (prompt-cached)`, inline: true },
         { name: 'Last query', value: lastUsage ? `${lastUsage.rounds} round(s), ${lastUsage.pagesFetched} page(s), ~$${estCost(lastUsage).toFixed(4)}` : '—', inline: true },
         { name: 'Since restart', value: `${sessionUsage.queries} queries, ~$${sessionUsage.cost.toFixed(2)}`, inline: true },
+        { name: 'Retrieval coverage', value: `${Object.keys(fetchCounts).length}/${wiki.retrievable.size} pages fetched ≥1× (all-time)`, inline: true },
       )
       .setFooter({ text: 'NRG Knowledge Base' });
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
@@ -457,19 +528,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
 // -----------------------------------------------------------------------------
 const RETRIEVAL_TOOLS = [{
   name: 'read_wiki_files',
-  description: 'Read the full contents of one or more wiki pages from the source page catalog. Batch every page you expect to need into a single call.',
+  description: 'Read wiki pages (or specific sections of large pages) from the source page catalog. Batch every page/section you expect to need into a SINGLE call. To read just one section of a large page, append "#Section name" to the path (section names are listed after "§" in the catalog); a bare path returns the whole page.',
   input_schema: {
     type: 'object',
     properties: {
       paths: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Wiki-relative paths exactly as they appear in the source page catalog, e.g. "sources/src-hebel-r-value.md"',
+        description: 'Wiki-relative path exactly as in the catalog, optionally with a section, e.g. "sources/src-hebel-r-value.md" (whole page) or "sources/src-ncc2022-housing-provisions-2022.md#Key claims" (one section).',
       },
     },
     required: ['paths'],
   },
 }];
+
+// Per-page retrieval counts (persisted) — data for audit-driven catalog pruning.
+const FETCH_STATS_FILE = path.join(__dirname, 'logs', 'fetch-stats.json');
+let fetchCounts = {};
+try { fetchCounts = JSON.parse(fs.readFileSync(FETCH_STATS_FILE, 'utf-8')); } catch { fetchCounts = {}; }
+function bumpFetch(p) { fetchCounts[p] = (fetchCounts[p] || 0) + 1; }
+function saveFetchStats() { try { fs.writeFileSync(FETCH_STATS_FILE, JSON.stringify(fetchCounts)); } catch { /* logs/ may be read-only */ } }
+
+// Resolve a requested section name against a page's sections: exact, then prefix
+// (so "13.2" matches "13.2 Fabric"), then substring. Case-insensitive.
+function matchSection(page, want) {
+  const w = want.toLowerCase();
+  return page.sections.find(s => s.name.toLowerCase() === w)
+      || page.sections.find(s => s.name.toLowerCase().startsWith(w))
+      || page.sections.find(s => s.name.toLowerCase().includes(w));
+}
 
 // Sonnet pricing (USD per MTok) for the console cost line — estimate only.
 const PRICE = { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 };
@@ -501,19 +588,39 @@ const sessionUsage = { queries: 0, cost: 0 };
 function readPagesForTool(paths, budget) {
   const parts = [];
   let fetched = 0;
-  for (const p of [...new Set(paths)]) {
+  for (const raw of [...new Set(paths)]) {
+    const hash = raw.indexOf('#');
+    const p = (hash >= 0 ? raw.slice(0, hash) : raw).trim();
+    const wantSection = hash >= 0 ? raw.slice(hash + 1).trim() : null;
     const page = wiki.retrievable.get(p);
     if (!page) {
-      parts.push(`=== FILE: ${p} ===\n(NOT FOUND — use an exact path from the source page catalog)`);
+      parts.push(`=== FILE: ${raw} ===\n(NOT FOUND — use an exact path from the source page catalog)`);
       continue;
     }
-    if (budget.remaining - page.content.length < 0) {
-      parts.push(`=== FILE: ${p} ===\n(SKIPPED — retrieval budget for this query is exhausted. Answer with what you have, or tell the user the question is too broad for one query.)`);
+
+    // Default: whole page. If a section was requested and matches, return just that
+    // section (re-attaching the page title for context); otherwise fall back to the
+    // whole page with a note listing the available sections.
+    let label = p;
+    let body = page.content;
+    if (wantSection) {
+      const sec = matchSection(page, wantSection);
+      if (sec) {
+        label = `${p}#${sec.name}`;
+        body = `# ${page.title || p}\n\n## ${sec.name}\n${sec.body}`;
+      } else {
+        parts.push(`=== NOTE ===\n(Section "${wantSection}" not found in ${p} — returning whole page. Sections: ${page.sections.map(s => s.name).join(', ') || 'none'})`);
+      }
+    }
+
+    if (budget.remaining - body.length < 0) {
+      parts.push(`=== FILE: ${label} ===\n(SKIPPED — retrieval budget for this query is exhausted. Answer with what you have, or tell the user the question is too broad for one query.)`);
       continue;
     }
-    budget.remaining -= page.content.length;
+    budget.remaining -= body.length;
     fetched++;
-    parts.push(`=== FILE: ${p} ===\n${page.content}`);
+    bumpFetch(p);
+    parts.push(`=== FILE: ${label} ===\n${body}`);
   }
   return { text: parts.join('\n\n'), fetched };
 }
@@ -523,21 +630,28 @@ async function answerWithRetrieval(history, userText) {
   const messages = [...history, { role: 'user', content: userText }];
   const usage = emptyUsage();
   const budget = { remaining: MAX_FETCH_CHARS };
+  let forceAnswer = false; // set once enough pages are fetched (adaptive cap)
 
   for (let round = 0; ; round++) {
+    // Allow another retrieval only if under the round cap AND the adaptive
+    // page cap hasn't tripped — otherwise force a text answer (no more re-sends).
+    const allowTools = round < MAX_TOOL_ROUNDS && !forceAnswer;
     const response = await anthropic.messages.create({
       model: MODEL,
-      max_tokens: 1500,
-      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+      max_tokens: 800,
+      system: [
+        { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: BREVITY_REMINDER },
+      ],
       tools: RETRIEVAL_TOOLS,
-      // Past the round cap, force a text answer from whatever has been fetched.
-      tool_choice: round < MAX_TOOL_ROUNDS ? { type: 'auto' } : { type: 'none' },
+      tool_choice: allowTools ? { type: 'auto' } : { type: 'none' },
       messages,
     });
     addUsage(usage, response);
 
     if (response.stop_reason !== 'tool_use') {
       const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+      saveFetchStats();
       return { text, usage };
     }
 
@@ -552,7 +666,40 @@ async function answerWithRetrieval(history, userText) {
       toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: text || '(no paths requested)' });
     }
     messages.push({ role: 'user', content: toolResults });
+    // Adaptive cap: enough fetched — answer next round rather than retrieve again.
+    if (MAX_FETCH_PAGES > 0 && usage.pagesFetched >= MAX_FETCH_PAGES) forceAnswer = true;
   }
+}
+
+// -----------------------------------------------------------------------------
+// Benchmark mode — replay a question set through answerWithRetrieval (no Discord)
+// and print per-question + aggregate token usage. `node bot.js --bench [file]`.
+// One process = one ephemeral-cache window, so Q2+ read the cached prefix exactly
+// like real back-to-back queries.
+// -----------------------------------------------------------------------------
+async function runBench() {
+  const idx = process.argv.indexOf('--bench');
+  const fileArg = process.argv[idx + 1];
+  const qfile = fileArg && !fileArg.startsWith('--') ? fileArg : null;
+  const questions = (qfile ? fs.readFileSync(qfile, 'utf-8') : '')
+    .split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  if (!questions.length) {
+    console.error('[bench] no questions — pass a file: node bot.js --bench questions.txt');
+    process.exit(1);
+  }
+  console.log(`[bench] model=${MODEL} | static prefix ≈ ${Math.round(SYSTEM_PROMPT.length / 4)} tok | ${questions.length} questions\n`);
+  let totalCost = 0, totalRounds = 0, totalPages = 0;
+  for (const q of questions) {
+    const { text, usage } = await answerWithRetrieval([], q);
+    const cost = estCost(usage);
+    totalCost += cost; totalRounds += usage.rounds; totalPages += usage.pagesFetched;
+    console.log(`[bench] Q: ${q}`);
+    console.log(`[bench]   rounds=${usage.rounds} pages=${usage.pagesFetched} in=${usage.input} out=${usage.output} cache_read=${usage.cacheRead} cache_write=${usage.cacheWrite} est=$${cost.toFixed(4)}`);
+    console.log(`[bench]   A: ${text.slice(0, 160).replace(/\n/g, ' ')}…\n`);
+  }
+  const n = questions.length;
+  console.log(`[bench] === ${n} Q | total=$${totalCost.toFixed(4)} | avg=$${(totalCost / n).toFixed(4)}/answer | avg rounds=${(totalRounds / n).toFixed(1)} pages=${(totalPages / n).toFixed(1)} ===`);
+  process.exit(0);
 }
 
 // -----------------------------------------------------------------------------
@@ -869,4 +1016,8 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.Error, (err) => console.error('[client error]', err));
 process.on('unhandledRejection', (err) => console.error('[unhandled]', err));
 
-client.login(DISCORD_TOKEN);
+if (BENCH) {
+  await runBench();
+} else {
+  client.login(DISCORD_TOKEN);
+}

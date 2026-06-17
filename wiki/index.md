@@ -60,7 +60,9 @@ Coverage by category (counts approximate):
 
 # Not yet ingested (the gap list)
 
-When a question lands here, say so and point at the raw file.
+When a question lands here, say so and point at the raw file. For the full standing register —
+jurisdiction coverage scores + prioritised gaps with dispositions — see [[coverage-gaps]]
+(retrieve it when asked "do we cover <state/topic>?").
 
 ## Needs OCR (image-only PDFs — no extractable text)
 
