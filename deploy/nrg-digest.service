@@ -1,0 +1,10 @@
+[Unit]
+Description=NRG bot weekly digest — refresh metrics + post to #bot-ops
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/nrg-bot
+ExecStart=/bin/bash -lc 'cd /opt/nrg-bot && node tools/mine-gaps.mjs && node tools/post-digest.mjs'

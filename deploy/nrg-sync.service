@@ -1,0 +1,11 @@
+[Unit]
+Description=NRG bot sync — deploy pull (repo→droplet) + telemetry push (droplet→repo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/nrg-bot
+# bash -lc loads root's profile so node + pm2 are on PATH (npm-global / nvm).
+ExecStart=/bin/bash -lc '/opt/nrg-bot/tools/deploy-sync.sh'

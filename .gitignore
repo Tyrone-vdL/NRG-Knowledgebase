@@ -19,6 +19,11 @@ drafts/
 # Bot runtime / dependencies
 node_modules/
 logs/
-bot-logs/
 *.bak
 *.tar.gz
+
+# Bot Q&A logs — raw dailies stay local (large/noisy); only the distilled,
+# machine-mined learning artifacts are tracked so droplet→repo telemetry works.
+bot-logs/*
+!bot-logs/feedback.jsonl
+!bot-logs/coverage-gaps-queue.md
