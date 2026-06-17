@@ -44,7 +44,10 @@ if [ -d "$TELE/.git" ] || git -C "$TELE" rev-parse --git-dir >/dev/null 2>&1; th
   # capture #ingest-merged wiki pages too (worktree was reset to main, so this is a clean overlay)
   if command -v rsync >/dev/null 2>&1; then rsync -a "$LIVE/wiki/" "$TELE/wiki/" 2>/dev/null
   else cp -rf "$LIVE/wiki/." "$TELE/wiki/" 2>/dev/null; fi
-  git -C "$TELE" add -f bot-logs/feedback.jsonl bot-logs/coverage-gaps-queue.md 2>/dev/null
+  # add each telemetry artifact only if it exists (feedback.jsonl appears once the
+  # first 👍/👎/correction lands; a missing path would otherwise fail the whole add)
+  [ -f "$TELE/bot-logs/feedback.jsonl" ]         && git -C "$TELE" add -f bot-logs/feedback.jsonl 2>/dev/null
+  [ -f "$TELE/bot-logs/coverage-gaps-queue.md" ] && git -C "$TELE" add -f bot-logs/coverage-gaps-queue.md 2>/dev/null
   git -C "$TELE" add wiki/ 2>/dev/null
   if ! git -C "$TELE" diff --cached --quiet; then
     git -C "$TELE" -c user.name='NRG Droplet' -c user.email='bot@nrg.local' \
