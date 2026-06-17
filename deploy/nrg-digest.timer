@@ -1,0 +1,11 @@
+[Unit]
+Description=Post the NRG bot digest every Wednesday 08:00 (bound to the weekly NRG sync)
+
+[Timer]
+# Wednesday 08:00 Australia/Sydney — the existing NRG sync, so the one human
+# checkpoint (review/merge droplet-telemetry) rides a ritual that already happens.
+OnCalendar=Wed 08:00 Australia/Sydney
+Persistent=true
+
+[Install]
+WantedBy=timers.target

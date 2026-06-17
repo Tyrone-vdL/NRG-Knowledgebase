@@ -297,6 +297,10 @@ if (DRY_RUN) {
 const conversations = new Map();
 const MAX_HISTORY = 10;
 
+// answerMsgId → {q, a, color, sources, user, ts} for answers awaiting 👍/👎 or
+// a reply-correction. Mirrors the pendingIngestions Map + 24h cleanup pattern.
+const answerFeedback = new Map();
+
 function getHistory(userId) {
   return conversations.get(userId) || [];
 }
@@ -322,6 +326,22 @@ function logQuery(user, question, answer) {
     fs.appendFileSync(logFile, entry);
   } catch (err) {
     console.error('[audit] Failed to log query:', err.message);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Self-learning feedback log — structured signals (ratings + corrections).
+// Append-only JSONL mined later by tools/mine-gaps.mjs. This is DATA ONLY:
+// a correction flags a gap for human-approved, source-grounded ingestion — it
+// is NEVER treated as truth and NEVER mutates the wiki. (Anti-fabrication.)
+// -----------------------------------------------------------------------------
+function logFeedback(obj) {
+  try {
+    const logDir = path.join(WIKI_ROOT, '..', 'bot-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.appendFileSync(path.join(logDir, 'feedback.jsonl'), JSON.stringify(obj) + '\n');
+  } catch (err) {
+    console.error('[feedback] Failed to log feedback:', err.message);
   }
 }
 
@@ -395,6 +415,7 @@ async function sendAnswerEmbed(message, question, answer) {
   const sources = extractSources(answer);
   const chunks = chunkForEmbed(answer);
 
+  let firstReply = null;
   for (let i = 0; i < chunks.length; i++) {
     const embed = new EmbedBuilder().setColor(color).setDescription(chunks[i]);
 
@@ -412,11 +433,12 @@ async function sendAnswerEmbed(message, question, answer) {
     }
 
     if (i === 0) {
-      await message.reply({ embeds: [embed] });
+      firstReply = await message.reply({ embeds: [embed] });
     } else {
       await message.channel.send({ embeds: [embed] });
     }
   }
+  return firstReply; // the embed message that carries the 👍/👎 feedback reactions
 }
 
 // -----------------------------------------------------------------------------
@@ -714,6 +736,23 @@ async function handleWikiQuery(message) {
   const userText = message.content.trim();
   if (!userText) return;
 
+  // If this message is a reply to one of the bot's answers, capture it as a
+  // correction signal (DATA ONLY — flags a gap; never edits the wiki). The
+  // message still flows through as a normal query below.
+  const repliedTo = message.reference?.messageId;
+  if (repliedTo && answerFeedback.has(repliedTo)) {
+    const ctx = answerFeedback.get(repliedTo);
+    logFeedback({
+      type: 'correction',
+      original_q: ctx.q,
+      original_a_excerpt: ctx.a.slice(0, 240),
+      correction_text: userText,
+      user: message.author.username,
+      ts: new Date().toISOString(),
+    });
+    console.log(`[feedback] correction captured from ${message.author.username}`);
+  }
+
   console.log(`[query] ${message.author.username}: ${userText}`);
 
   let typingInterval;
@@ -733,7 +772,26 @@ async function handleWikiQuery(message) {
     logQuery(message.author.username, userText, reply);
 
     clearInterval(typingInterval);
-    await sendAnswerEmbed(message, userText, reply);
+    const replyMsg = await sendAnswerEmbed(message, userText, reply);
+
+    // Register the answer for 👍/👎 feedback capture (mirrors pendingIngestions).
+    if (replyMsg) {
+      try {
+        await replyMsg.react('👍');
+        await replyMsg.react('👎');
+        answerFeedback.set(replyMsg.id, {
+          q: userText,
+          a: reply,
+          color: pickAnswerColor(reply) === COLOR_CAUTION ? 'amber' : 'green',
+          sources: extractSources(reply),
+          user: message.author.username,
+          ts: new Date().toISOString(),
+        });
+        setTimeout(() => answerFeedback.delete(replyMsg.id), 24 * 60 * 60 * 1000);
+      } catch (e) {
+        console.error('[feedback] react/register failed:', e.message);
+      }
+    }
 
     console.log(`[reply] ${message.author.username}: ${reply.slice(0, 80)}...`);
   } catch (err) {
@@ -919,6 +977,26 @@ async function handleIngest(message) {
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch().catch(() => {});
+
+  // Answer feedback: 👍/👎 on a bot answer, from ANY team member (not owner-only).
+  if (answerFeedback.has(reaction.message.id)) {
+    const emoji = reaction.emoji.name;
+    if (emoji === '👍' || emoji === '👎') {
+      const ctx = answerFeedback.get(reaction.message.id);
+      logFeedback({
+        type: 'rating',
+        rating: emoji === '👍' ? 'up' : 'down',
+        q: ctx.q,
+        a_excerpt: ctx.a.slice(0, 240),
+        color: ctx.color,
+        sources: ctx.sources,
+        user: user.username,
+        ts: new Date().toISOString(),
+      });
+      console.log(`[feedback] ${emoji} from ${user.username}`);
+    }
+    return;
+  }
 
   const previewMsg = reaction.message;
   if (!pendingIngestions.has(previewMsg.id)) return;
