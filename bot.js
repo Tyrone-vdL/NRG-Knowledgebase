@@ -4,8 +4,8 @@
 //
 // Two channels, two jobs:
 //   #wiki-bot — every message is a query against the wiki, answered by Claude
-//   #ingest   — file uploads are summarised into draft wiki source pages
-//               and merged into the wiki on owner approval (✅ reaction)
+//   #ingest   — file uploads OR pasted text are summarised into draft wiki source
+//               pages and merged into the wiki on owner approval (✅ reaction)
 //
 // All other channels are ignored.
 //
@@ -65,6 +65,10 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const WIKI_ROOT = process.env.WIKI_ROOT || path.join(__dirname, 'wiki');
 const MODEL = process.env.MODEL || 'claude-sonnet-4-6';
 const MAX_INGEST_BYTES = parseInt(process.env.MAX_INGEST_BYTES || '20971520', 10); // 20 MB
+// Min chars for an un-prefixed pasted message in #ingest to be treated as a source
+// (below this it's assumed to be chat, not content). An explicit `ingest:`/`!ingest`
+// prefix bypasses this floor. The ✅/❌ approval gate is the final safety net either way.
+const INGEST_TEXT_MIN_CHARS = parseInt(process.env.INGEST_TEXT_MIN_CHARS || '200', 10);
 const MAX_TOOL_ROUNDS = parseInt(process.env.MAX_TOOL_ROUNDS || '3', 10);
 const MAX_FETCH_CHARS = parseInt(process.env.MAX_FETCH_CHARS || '120000', 10); // per-query retrieval budget
 // Adaptive cap: once a query has fetched this many pages, force a text answer on
@@ -494,7 +498,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         },
         {
           name: '📥  #ingest',
-          value: "Drop a PDF, Word doc, or text file here. I'll draft a wiki summary and post it for approval. The wiki only changes after Tyrone reacts ✅.",
+          value: "Two ways to add knowledge: **drop a file** (PDF, Word doc, text file), or **paste text directly** — just paste a chunk of content into the channel (or prefix it with `ingest:` for shorter snippets). Either way I draft a wiki summary and post it for approval. The wiki only changes after Tyrone reacts ✅.",
         },
         {
           name: '⚙️  Slash commands',
@@ -907,54 +911,29 @@ ${truncated}`;
   return response.content[0].text.trim();
 }
 
-async function handleIngest(message) {
-  if (message.author.id !== OWNER_USER_ID && !isAllowed(message.member)) {
-    await message.reply("Only NRG team members can ingest files. Ask Matt or Tyrone for access.");
-    return;
-  }
-
-  const attachment = message.attachments.first();
-  if (!attachment) {
-    return; // user sent a plain message in #ingest — ignore
-  }
-
-  if (attachment.size > MAX_INGEST_BYTES) {
-    await message.reply(`File too large (${Math.round(attachment.size / 1024 / 1024)} MB). Limit is ${Math.round(MAX_INGEST_BYTES / 1024 / 1024)} MB.`);
-    return;
-  }
-
-  await message.react('👀');
-  console.log(`[ingest] ${message.author.username} uploaded ${attachment.name}`);
-
+// Shared tail of both ingest paths: draft a wiki source page from raw text, post the
+// preview embed, and register it for ✅/❌ approval. `sourceLabel` is what shows in the
+// frontmatter/footer/log; `slugBasis` seeds the suggested filename.
+async function postIngestPreview(message, rawText, sourceLabel, slugBasis) {
   let draft;
   try {
-    const buffer = await downloadToBuffer(attachment.url);
-    const text = await extractText(buffer, attachment.name);
-
-    if (text.trim().length < 100) {
-      await message.reply(`I couldn't extract meaningful text from \`${attachment.name}\`. If it's a scanned PDF I'd need OCR — share the source another way.`);
-      return;
-    }
-
-    draft = await draftWikiSourcePage(text, attachment.name);
+    draft = await draftWikiSourcePage(rawText, sourceLabel);
   } catch (err) {
     console.error('[ingest error]', err);
-    await message.reply(`Couldn't process \`${attachment.name}\`: ${err.message}`);
+    await message.reply(`Couldn't process that source: ${err.message}`);
     return;
   }
 
-  // Suggested filename for the wiki/sources/ file
-  const baseSlug = slugify(attachment.name);
+  const baseSlug = slugify(slugBasis);
   const suggestedFilename = `src-${baseSlug || 'untitled'}.md`;
 
-  // Post preview embed
   const previewBody = draft.length > 3500 ? draft.slice(0, 3500) + '\n\n*…truncated for preview; full draft will be written on approval.*' : draft;
 
   const embed = new EmbedBuilder()
     .setTitle(`Draft wiki page: ${suggestedFilename}`)
     .setDescription(`\`\`\`md\n${previewBody}\n\`\`\``)
     .setColor(0xE97451)
-    .setFooter({ text: `Source: ${attachment.name}  ·  Uploaded by ${message.author.username}  ·  React ✅ to merge or ❌ to discard.` });
+    .setFooter({ text: `Source: ${sourceLabel}  ·  Submitted by ${message.author.username}  ·  React ✅ to merge or ❌ to discard.` });
 
   const previewMsg = await message.channel.send({ embeds: [embed] });
   await previewMsg.react('✅');
@@ -963,12 +942,77 @@ async function handleIngest(message) {
   pendingIngestions.set(previewMsg.id, {
     draft,
     suggestedFilename,
-    originalAttachmentName: attachment.name,
+    originalAttachmentName: sourceLabel,
     requestedBy: message.author.username,
   });
 
   // Clear pending entry after 24h to avoid memory leak
   setTimeout(() => pendingIngestions.delete(previewMsg.id), 24 * 60 * 60 * 1000);
+}
+
+async function handleIngest(message) {
+  const attachment = message.attachments.first();
+
+  // Detect an explicit text-ingest intent: `ingest:`, `!ingest`, or `/ingest` prefix.
+  const rawContent = message.content || '';
+  const prefixMatch = rawContent.match(/^\s*(?:!ingest|\/ingest|ingest:)\s*/i);
+  const explicitText = Boolean(prefixMatch);
+  const pastedText = (explicitText ? rawContent.slice(prefixMatch[0].length) : rawContent).trim();
+
+  // Does this message look like an ingest attempt at all? (attachment, explicit prefix,
+  // or a substantial paste). Plain short chatter in #ingest is ignored, as before.
+  const looksLikeIngest = Boolean(attachment) || explicitText || pastedText.length >= INGEST_TEXT_MIN_CHARS;
+  if (!looksLikeIngest) return;
+
+  if (message.author.id !== OWNER_USER_ID && !isAllowed(message.member)) {
+    await message.reply("Only NRG team members can ingest sources. Ask Matt or Tyrone for access.");
+    return;
+  }
+
+  // ---- Path A: file attachment ----
+  if (attachment) {
+    if (attachment.size > MAX_INGEST_BYTES) {
+      await message.reply(`File too large (${Math.round(attachment.size / 1024 / 1024)} MB). Limit is ${Math.round(MAX_INGEST_BYTES / 1024 / 1024)} MB.`);
+      return;
+    }
+
+    await message.react('👀');
+    console.log(`[ingest] ${message.author.username} uploaded ${attachment.name}`);
+
+    let text;
+    try {
+      const buffer = await downloadToBuffer(attachment.url);
+      text = await extractText(buffer, attachment.name);
+    } catch (err) {
+      console.error('[ingest error]', err);
+      await message.reply(`Couldn't process \`${attachment.name}\`: ${err.message}`);
+      return;
+    }
+
+    if (text.trim().length < 100) {
+      await message.reply(`I couldn't extract meaningful text from \`${attachment.name}\`. If it's a scanned PDF I'd need OCR — share the source another way.`);
+      return;
+    }
+
+    await postIngestPreview(message, text, attachment.name, attachment.name);
+    return;
+  }
+
+  // ---- Path B: pasted text (no attachment) ----
+  if (explicitText && pastedText.length < 20) {
+    await message.reply("Paste the text you want me to add after the keyword, e.g. `ingest: <your content here>` — or just paste a decent chunk of text on its own and I'll pick it up.");
+    return;
+  }
+
+  await message.react('👀');
+  console.log(`[ingest] ${message.author.username} pasted ${pastedText.length} chars of text`);
+
+  // Seed the filename from the first non-empty line; label the source as a paste.
+  const firstLine = pastedText.split('\n').map((s) => s.trim()).find(Boolean) || 'pasted-text';
+  const slugBasis = firstLine.slice(0, 80);
+  const sourceLabel = `Pasted text — ${message.author.username} ${new Date().toISOString().slice(0, 10)}`;
+
+  await postIngestPreview(message, pastedText, sourceLabel, slugBasis);
 }
 
 // -----------------------------------------------------------------------------
