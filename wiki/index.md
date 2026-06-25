@@ -94,3 +94,5 @@ BCA 1996/2009, NCC 2015/2016/2019 volumes and guides. Historic editions: only re
 # How this index gets maintained
 
 New sources ingested via Discord `#ingest` (or batch runs) create `wiki/sources/src-<slug>.md` pages automatically. The bot auto-catalogs every source page at startup — this index deliberately does NOT list pages individually; keep it lean. Update the category table counts and the gap list when batches land. See `OPERATIONS.md`.
+- [[sources/src-kingspan-kooltherm-k10g2-product-datasheet-en-au]] — Kingspan Kooltherm K10 G2 Soffit Board – Product Datasheet *(ingested 2026-06-24)*
+- [[sources/src-message]] — NCC 2022 Residential Energy Efficiency Compliance Pathways — Specification 44 and H6V2 Verification *(ingested 2026-06-25)*
