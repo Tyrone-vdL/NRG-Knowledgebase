@@ -47,6 +47,7 @@ import { fileURLToPath } from 'url';
 import https from 'https';
 import pdfParse from 'pdf-parse';
 import mammoth from 'mammoth';
+import { execFileSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -64,6 +65,14 @@ const NRG_TEAM_ROLE_ID = process.env.NRG_TEAM_ROLE_ID || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const WIKI_ROOT = process.env.WIKI_ROOT || path.join(__dirname, 'wiki');
 const MODEL = process.env.MODEL || 'claude-sonnet-4-6';
+const BOT_OPS_WEBHOOK = process.env.BOT_OPS_WEBHOOK || '';
+// Durable-ingest plumbing: approved pages are committed + pushed to origin/main
+// (the source of truth) so they survive the deploy-sync cycle. The git work runs
+// in tools/persist-ingest.sh under an flock shared with deploy-sync.sh so the two
+// can never touch the live checkout's index/HEAD at the same time.
+const REPO_ROOT = __dirname;
+const GIT_LOCKFILE = path.join(REPO_ROOT, '.git', 'nrg-git.lock');
+const PERSIST_SCRIPT = path.join(REPO_ROOT, 'tools', 'persist-ingest.sh');
 const MAX_INGEST_BYTES = parseInt(process.env.MAX_INGEST_BYTES || '20971520', 10); // 20 MB
 // Min chars for an un-prefixed pasted message in #ingest to be treated as a source
 // (below this it's assumed to be chat, not content). An explicit `ingest:`/`!ingest`
@@ -1018,6 +1027,38 @@ async function handleIngest(message) {
 // -----------------------------------------------------------------------------
 // Reaction handler — owner approves/rejects ingestions
 // -----------------------------------------------------------------------------
+// Best-effort one-line alert to #bot-ops (same webhook deploy-sync.sh uses), so a
+// failed durability push is LOUD, not silent — matching the deploy loop's philosophy.
+function alertBotOps(content) {
+  if (!BOT_OPS_WEBHOOK) return;
+  try {
+    const data = JSON.stringify({ content });
+    const u = new URL(BOT_OPS_WEBHOOK);
+    const req = https.request({
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+    });
+    req.on('error', () => {});
+    req.write(data);
+    req.end();
+  } catch { /* best-effort only */ }
+}
+
+// Commit the approved page (+ index.md/log.md) and push it to origin/main so it
+// survives the deploy-sync cycle. Runs under an flock shared with deploy-sync.sh.
+// Throws on any failure; the caller surfaces that in #ingest and #bot-ops.
+function persistIngestToGit(pageAbsPath, title) {
+  const pageRel = path.relative(REPO_ROOT, pageAbsPath);
+  execFileSync('flock', [GIT_LOCKFILE, PERSIST_SCRIPT, pageRel], {
+    cwd: REPO_ROOT,
+    env: { ...process.env, COMMIT_TITLE: title, REPO: REPO_ROOT },
+    timeout: 60000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch().catch(() => {});
@@ -1089,9 +1130,25 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
       // Reload wiki + acknowledge
       const count = reloadWiki();
       await previewMsg.react('🎉');
-      await previewMsg.channel.send(`Merged into wiki as \`sources/${path.basename(targetPath)}\`. Wiki now has **${count}** files in context.`);
+
+      // Persist to git so the page survives the deploy-sync cycle. Un-committed
+      // pages used to live only as working-tree drift and were destroyed by the
+      // deploy stash step whenever main advanced — this is the root-cause fix.
+      let durability;
+      try {
+        persistIngestToGit(targetPath, title);
+        durability = ' and committed to `main`';
+        console.log(`[ingest] APPROVED + pushed → ${path.basename(targetPath)}`);
+      } catch (gitErr) {
+        const detail = (gitErr.stderr || gitErr.message || '').toString().trim().split('\n').pop();
+        durability = ' — ⚠️ **saved to the live wiki but NOT yet pushed to `main`** (durability at risk; ops pinged)';
+        console.error('[ingest git persist FAILED]', gitErr.status, detail);
+        await previewMsg.react('⚠️').catch(() => {});
+        alertBotOps(`⚠️ NRG ingest: \`${path.basename(targetPath)}\` approved but the push to main FAILED (exit ${gitErr.status ?? '?'}: ${detail || 'unknown'}). The page is live in-memory but will be lost at the next deploy until pushed — run \`tools/persist-ingest.sh ${path.relative(REPO_ROOT, targetPath)}\` on the droplet.`);
+      }
+
+      await previewMsg.channel.send(`Merged into wiki as \`sources/${path.basename(targetPath)}\`${durability}. Wiki now has **${count}** files in context.`);
       pendingIngestions.delete(previewMsg.id);
-      console.log(`[ingest] APPROVED → ${path.basename(targetPath)}`);
     } catch (err) {
       console.error('[ingest approve error]', err);
       await previewMsg.channel.send(`Couldn't merge: \`${err.message}\``);

@@ -8,8 +8,13 @@
 #     and any #ingest-merged wiki pages, then force-pushed. The LIVE checkout is
 #     NEVER branch-switched, so the running bot is never disturbed.
 #   • DEPLOY PULL (repo → live): fast-forward main into the live checkout, gated by
-#     `node --check` + `node bot.js --dry-run`, with automatic rollback. Live ingest
-#     drift is set aside first — it is already safe on droplet-telemetry by then.
+#     `node --check` + `node bot.js --dry-run`, with automatic rollback. Any live
+#     working-tree drift is stashed across the merge and RE-APPLIED afterwards
+#     (never dropped) — approved #ingest pages are pushed straight to main by
+#     bot.js, but anything not yet pushed must still survive the deploy.
+#
+# All git work below holds an flock on $LIVE/.git/nrg-git.lock, the same lock
+# bot.js takes to commit an approved ingest, so the two never interleave.
 #
 # Any failure posts a one-line alert to #bot-ops so a broken loop is LOUD, not silent
 # (the verified #1 death mode: telemetry silently stuck on the box == today's drift).
@@ -33,6 +38,12 @@ git fetch origin main --quiet 2>/dev/null || { LOG "fetch failed"; exit 0; }
 
 # --- refresh the ranked gap queue + metrics (cheap, no API spend) ------------
 node tools/mine-gaps.mjs >/dev/null 2>&1 || LOG "mine-gaps failed"
+
+# Serialize all git work below against bot.js's ✅-ingest persist path; both take
+# this same lock so a deploy stash/merge can never interleave with an in-flight
+# ingest commit. The fd is held until the script exits, releasing the lock.
+exec 9>"$LIVE/.git/nrg-git.lock"
+flock -w 120 9 || { LOG "could not acquire git lock within 120s — skipping this cycle"; exit 0; }
 
 # --- TELEMETRY PUSH (disposable worktree; never touches the live checkout) ---
 if [ -d "$TELE/.git" ] || git -C "$TELE" rev-parse --git-dir >/dev/null 2>&1; then
@@ -68,7 +79,10 @@ LOCAL=$(git rev-parse HEAD)
 ORIGIN=$(git rev-parse origin/main)
 if [ "$LOCAL" != "$ORIGIN" ]; then
   LOG "deploying main ${LOCAL:0:8} → ${ORIGIN:0:8}"
-  git stash push -u -q -m nrg-drift 2>/dev/null || true   # drift already safe on droplet-telemetry
+  # Set drift aside, but remember whether anything was actually stashed (an empty
+  # `stash push` creates no entry) so we can restore exactly what we set aside.
+  STASHED=0
+  if git stash push -u -q -m nrg-drift 2>/dev/null && git stash list | grep -q nrg-drift; then STASHED=1; fi
   if git merge --ff-only origin/main --quiet; then
     if node --check bot.js && node bot.js --dry-run >/tmp/nrg-dryrun.log 2>&1; then
       pm2 restart nrg-bot --update-env >/dev/null 2>&1
@@ -85,6 +99,11 @@ if [ "$LOCAL" != "$ORIGIN" ]; then
     git merge --abort 2>/dev/null || true
     alert "⚠️ NRG deploy: ff-only merge failed (live checkout diverged from main) — manual check needed."
   fi
-  git stash drop -q 2>/dev/null || true   # discard drift; canonical copy lives on the remote
+  # Re-apply drift instead of discarding it. An approved #ingest page that hasn't
+  # been pushed to main yet (e.g. bot.js's push failed) MUST survive the deploy —
+  # destroying it here was the K10 data-loss bug.
+  if [ "$STASHED" = 1 ]; then
+    git stash pop -q 2>/dev/null || { LOG "stash pop conflict — drift left in 'git stash list'"; alert "⚠️ NRG deploy: stash pop conflict — ingest drift left stashed on the droplet, needs manual recovery."; }
+  fi
 fi
 LOG "done"
