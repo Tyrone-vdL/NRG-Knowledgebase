@@ -61,6 +61,15 @@ const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
 const WIKI_BOT_CHANNEL_ID = process.env.WIKI_BOT_CHANNEL_ID;
 const INGEST_CHANNEL_ID = process.env.INGEST_CHANNEL_ID;
 const OWNER_USER_ID = process.env.OWNER_USER_ID;
+// Discord user IDs allowed to approve (✅) / discard (❌) #ingest pages, in addition
+// to the owner. Comma-separated in .env. The owner is always an approver.
+const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+function isIngestApprover(userId) {
+  return userId === OWNER_USER_ID || ADMIN_USER_IDS.includes(userId);
+}
 const NRG_TEAM_ROLE_ID = process.env.NRG_TEAM_ROLE_ID || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const WIKI_ROOT = process.env.WIKI_ROOT || path.join(__dirname, 'wiki');
@@ -507,7 +516,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         },
         {
           name: '📥  #ingest',
-          value: "Two ways to add knowledge: **drop a file** (PDF, Word doc, text file), or **paste text directly** — just paste a chunk of content into the channel (or prefix it with `ingest:` for shorter snippets). Either way I draft a wiki summary and post it for approval. The wiki only changes after Tyrone reacts ✅.",
+          value: "Two ways to add knowledge: **drop a file** (PDF, Word doc, text file), or **paste text directly** — just paste a chunk of content into the channel (or prefix it with `ingest:` for shorter snippets). Either way I draft a wiki summary and post it for approval. The wiki only changes after an admin reacts ✅.",
         },
         {
           name: '⚙️  Slash commands',
@@ -1085,8 +1094,8 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
 
   const previewMsg = reaction.message;
   if (!pendingIngestions.has(previewMsg.id)) return;
-  if (user.id !== OWNER_USER_ID) {
-    // Non-owner reacted — quietly remove their reaction
+  if (!isIngestApprover(user.id)) {
+    // Not an approver — quietly remove their reaction
     await reaction.users.remove(user.id).catch(() => {});
     return;
   }
