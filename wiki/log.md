@@ -105,3 +105,10 @@ File: `sources/src-message.md`
 Original upload: `message.txt`
 Requested by: matt_nrg
 Approved by: vandl8948
+
+## [2026-06-30] ingest | NCC 2019 Volume Two Amendment 1 – Building Code of Australia (Class 1 and 10 Buildings)
+
+File: `sources/src-ncc-2019-volume-two-amendment-1.md`
+Original upload: `NCC_2019_Volume_Two_Amendment_1.pdf`
+Requested by: matt_nrg
+Approved by: matt_nrg

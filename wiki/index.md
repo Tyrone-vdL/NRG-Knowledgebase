@@ -96,3 +96,4 @@ BCA 1996/2009, NCC 2015/2016/2019 volumes and guides. Historic editions: only re
 New sources ingested via Discord `#ingest` (or batch runs) create `wiki/sources/src-<slug>.md` pages automatically. The bot auto-catalogs every source page at startup — this index deliberately does NOT list pages individually; keep it lean. Update the category table counts and the gap list when batches land. See `OPERATIONS.md`.
 - [[sources/src-kingspan-kooltherm-k10g2-product-datasheet-en-au]] — Kingspan Kooltherm K10 G2 Soffit Board – Product Datasheet *(ingested 2026-06-24)*
 - [[sources/src-message]] — NCC 2022 Residential Energy Efficiency Compliance Pathways — Specification 44 and H6V2 Verification *(ingested 2026-06-25)*
+- [[sources/src-ncc-2019-volume-two-amendment-1]] — NCC 2019 Volume Two Amendment 1 – Building Code of Australia (Class 1 and 10 Buildings) *(ingested 2026-06-30)*
