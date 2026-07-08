@@ -97,3 +97,4 @@ New sources ingested via Discord `#ingest` (or batch runs) create `wiki/sources/
 - [[sources/src-kingspan-kooltherm-k10g2-product-datasheet-en-au]] — Kingspan Kooltherm K10 G2 Soffit Board – Product Datasheet *(ingested 2026-06-24)*
 - [[sources/src-message]] — NCC 2022 Residential Energy Efficiency Compliance Pathways — Specification 44 and H6V2 Verification *(ingested 2026-06-25)*
 - [[sources/src-ncc-2019-volume-two-amendment-1]] — NCC 2019 Volume Two Amendment 1 – Building Code of Australia (Class 1 and 10 Buildings) *(ingested 2026-06-30)*
+- [[sources/src-building-act-qld-1975-011]] — Queensland Building Act 1975 — Legislative Overview *(ingested 2026-07-08)*

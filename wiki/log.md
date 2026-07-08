@@ -112,3 +112,10 @@ File: `sources/src-ncc-2019-volume-two-amendment-1.md`
 Original upload: `NCC_2019_Volume_Two_Amendment_1.pdf`
 Requested by: matt_nrg
 Approved by: matt_nrg
+
+## [2026-07-08] ingest | Queensland Building Act 1975 — Legislative Overview
+
+File: `sources/src-building-act-qld-1975-011.md`
+Original upload: `BUILDING_ACT_QLD-1975-011.pdf`
+Requested by: matt_nrg
+Approved by: matt_nrg
