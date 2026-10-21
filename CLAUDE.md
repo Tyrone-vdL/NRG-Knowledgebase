@@ -30,13 +30,11 @@ The bot runs live on a droplet at `/opt/nrg-bot` under pm2 (process `nrg-bot`), 
 1. **Be a trustworthy answer desk.** Fast, correct, **source-cited** answers on Australian energy regs and
    product specs. The product's whole value rests on the **anti-fabrication guarantee**: never invent an
    R-value / U-value / clause number — if the wiki is silent, say so and point at the source to ingest.
-2. **Be comprehensive across all of Australia.** Regulation varies by state/territory. Today QLD/NSW/VIC/ACT
-   are workable; **SA, WA, NT are critically thin** (see `wiki/coverage-gaps.md`). Closing jurisdiction and
-   topic gaps is ongoing.
-3. **Keep per-answer cost low.** The bot scales to a large library without shipping it all every query, and
-   we actively minimise token spend per answer (see §4, §6).
-4. **Live testing.** The team is using the bot for real; every question that finds a gap or a wrong answer
-   feeds back into ingestion + hardening. Treat the `bot-logs/` Q&A history as the test record.
+2. **Be comprehensive across all of Australia.** QLD/NSW/VIC/ACT are workable; **SA, WA, NT are critically
+   thin** (`wiki/coverage-gaps.md`). Closing jurisdiction/topic gaps is ongoing.
+3. **Keep per-answer cost low.** Scale to a large library without shipping it all every query (see §4, §6).
+4. **Live testing.** The team uses the bot for real; every gap or wrong answer feeds back into ingestion +
+   hardening. The `bot-logs/` Q&A history is the test record.
 
 ---
 
@@ -54,7 +52,8 @@ The bot runs live on a droplet at `/opt/nrg-bot` under pm2 (process `nrg-bot`), 
 ```
 bot.js                 # the Discord bot (single file)
 ecosystem.config.cjs   # pm2 config
-tools/                 # extract-raw-text.mjs, sync-wiki.mjs, bench-questions.txt
+tools/                 # extract-raw-text.mjs, sync-wiki.mjs, bench-questions.txt,
+                       #   deploy-sync.sh, mine-gaps.mjs, post-digest.mjs (self-learning loop)
 wiki/
   index.md             # master index + "not yet ingested" gap list  (always-loaded)
   config.md            # source-root path config                       (always-loaded)
@@ -68,15 +67,16 @@ wiki/
 Z - NCC/ , Z - PRODUCT INFO/ , Z - RESOURCES_FORMS/ , Z - TECHNICAL INFO/   # raw source library
 ```
 Each `wiki/sources/*.md` declares its raw `source:` path in frontmatter, resolved relative to the repo
-root (`config.md` source root = `.`). 156 source pages were verified to resolve to real raw docs.
+root (`config.md` source root = `.`). All source pages (165 at the 2026-07 audit — the count grows with
+every ingest) are verified to resolve to real raw docs.
 
 ---
 
 ## 4. The bot — how it works (`bot.js`)
 
-- **Channels:** `#wiki-bot` (every message → a wiki query) and `#ingest` (file upload → drafted source
-  page, merged on the owner's ✅). All other channels ignored.
-- **Model:** `claude-sonnet-4-6` (env `MODEL`). **Do not downgrade** — the anti-fabrication discipline
+- **Channels:** `#wiki-bot` (every message → a wiki query) and `#ingest` (file upload **or pasted text**
+  → drafted source page, merged on the owner's ✅; PR #3, 2026-06-25). All other channels ignored.
+- **Model:** `claude-sonnet-4-6` (env `MODEL`). **Do not downgrade** — the answer discipline (§2.1)
   depends on it. `max_tokens` 1500 for answers.
 - **Retrieval loop (`answerWithRetrieval`):** multi-round tool use. Round 0 reads the question + cached
   prefix and calls `read_wiki_files`; later rounds fetch more or answer. Capped by `MAX_TOOL_ROUNDS` and an
@@ -114,66 +114,45 @@ pm2 logs nrg-bot      /    tail -f logs/out.log
   figure-bearing answers in `tools/bench-questions.txt` stay correct (that file doubles as the quality guard).
 - **Ingesting a source:** follow `wiki/CLAUDE.md` §"How to ingest" — create `wiki/sources/src-<slug>.md`,
   update `index.md`, append to `log.md`, sync to the live bot, then `/reload` or restart.
-- **Git:** the local SSH deploy key can push to `NRG-Knowledgebase` (config persisted). **Direct pushes to
-  `main` are gated** — push a branch and let the owner review/merge. Commit messages end with the
-  Co-Authored-By trailer.
-- **Live bot vs repo:** `/opt/nrg-bot` is the running checkout. After editing here, restart pm2 to go live,
+- **Git:** the local SSH deploy key can push to `NRG-Knowledgebase`. **Direct pushes to `main` are gated** —
+  push a branch and let the owner review/merge. Commit messages end with the Co-Authored-By trailer.
+- **Live bot vs repo:** `/opt/nrg-bot` is the running checkout. After editing there, restart pm2 to go live,
   *and* commit the same files to `NRG-Knowledgebase` so the repo stays the source of truth.
 
 ---
 
-## 6. What's been done so far (2026-06)
+## 6. What's been done so far
 
-Reverse-chronological; see `wiki/log.md` for the wiki-level detail.
+Reverse-chronological, one line per shipped item — full detail in `git log` and `wiki/log.md`.
 
-- **Self-learning + auto-sync loop — LIVE** (PR #2, merged): the bot captures 👍/👎 + reply-corrections to
-  `bot-logs/feedback.jsonl` (DATA only — never auto-edits the wiki); `tools/mine-gaps.mjs` ranks gaps into
-  `bot-logs/coverage-gaps-queue.md`; `tools/deploy-sync.sh` (systemd `nrg-sync.timer`, every 15 min) does gated
-  ff-only auto-deploy + telemetry push to the `droplet-telemetry` branch; `tools/post-digest.mjs`
-  (`nrg-digest.timer`, Wed 08:00 Sydney) posts a `#bot-ops` digest. See `OBJECTIVE.md` + `deploy/README.md`.
-- **Droplet cutover:** `/opt/nrg-bot` repointed from the dead ChoppaTheMegalodon repo to NRG-Knowledgebase via a
-  write deploy key + `droplet-telemetry` worktree. **Deploy flow is now: merge to `main` → the droplet
-  auto-ff-pulls within 15 min, runs `node bot.js --dry-run` as a gate, restarts, rolls back on failure.** The
-  old scp/manual flow is retired.
-- **NCC-version discipline (system-prompt rule 4):** the bot now asks which NCC version applies when a question
-  doesn't state it, and never cross-cites another version's rules (the root-cause fix for the wrong QLD CZ2
-  floor answer). Requested twice by Will.
-- **Token-spend reduction + coverage gap register** (merged, PR #1): section-level retrieval, `products/index.md`
-  demoted to retrievable, adaptive round cap, fetch counters + `--bench` harness. Measured
-  **$0.0863 → $0.0557/answer (−35% all-in, ~−43% warm-cache)** with no quality regression. Added
-  `wiki/coverage-gaps.md`.
-- **KB coverage audit** → `wiki/coverage-gaps.md`: QLD/NSW/VIC/ACT workable; **SA/WA/NT critically thin**;
-  state NCC schedules + several Building Acts aren't in the repo (flagged for external sourcing).
-- **NCC 2019 Vol 2 floor provisions ingested** (`wiki/sources/src-ncc-2019-volume-two-amdt1.md`) — Table
-  3.12.1.4 (CZ2 suspended floor = R1.0) + clause 3.12.1.5. Closed the gap behind two wrong/incomplete answers.
-- **Live #wiki-bot audit** of the logged Q&A: found a wrong NCC-2019 floor answer (it had used NCC 2022
-  rules), an under-specified outdoor-living-credit answer, and confirmed several correct ones. Drafted
-  corrections; changelog posted to #general.
-- **Repo unification:** merged the bot code + `wiki/` layer into `Tyrone-vdL/NRG-Knowledgebase` so raw docs
-  and their summaries version together. `config.md` source root repointed to the repo root.
+- **#ingest accepts pasted text** as well as file uploads (PR #3, 2026-06-25).
+- **Self-learning + auto-sync loop — LIVE** (PR #2): 👍/👎 + reply-corrections → `bot-logs/feedback.jsonl` (DATA only, never auto-edits the wiki); `mine-gaps.mjs` gap ranking; `deploy-sync.sh` gated ff-only auto-deploy + telemetry push; `post-digest.mjs` Wed `#bot-ops` digest. Details: `OBJECTIVE.md`, `deploy/README.md`.
+- **Droplet cutover:** merge to `main` → droplet auto-ff-pulls ≤15 min, `--dry-run` gate, restart, rollback on failure. Old scp/manual flow retired; old ChoppaTheMegalodon remote dead.
+- **NCC-version discipline** (system-prompt rule 4): bot asks which NCC version applies; never cross-cites versions.
+- **Token-spend reduction + gap register** (PR #1): section retrieval, adaptive caps, `--bench` harness — **$0.0863 → $0.0557/answer (−35%)**, no quality regression. Added `wiki/coverage-gaps.md`.
+- **KB coverage audit:** QLD/NSW/VIC/ACT workable; **SA/WA/NT critically thin** (`wiki/coverage-gaps.md`).
+- **NCC 2019 Vol 2 floor provisions ingested** (`src-ncc-2019-volume-two-amdt1.md`); live Q&A audit + corrections shipped.
+- **Repo unification (2026-06-15):** bot + `wiki/` merged into `Tyrone-vdL/NRG-Knowledgebase`; `config.md` source root = repo root.
 
 ---
 
 ## 7. Current state & open items
 
-> **Resume here.** This file is the repo-resident system state — accurate as of the loop going live (2026-06-17).
+> **Resume here.** This file is the repo-resident system state — accurate as of 2026-07-03.
 > The per-client *session & decision history* (and non-repo items like billing) lives in the operator's Work Life
 > memory and auto-loads when Claude Code is started from the `Work Life` directory.
 
 - **The self-learning loop is LIVE and running** — both systemd timers (`nrg-sync`, `nrg-digest`) enabled on the
   droplet, `#bot-ops` webhook wired, repo/droplet/local clone all in sync on `main`. Nothing here is "awaiting review".
-- **Open — live smoke test:** confirm a 👍/👎 (or reply-correction) on a *fresh* answer writes a line to
-  `bot-logs/feedback.jsonl` (the in-memory `answerFeedback` map only tracks answers given since the last restart).
+- **Done — live smoke test (verified 2026-07-03):** a 👍 on a fresh answer (matt_nrg, 2026-06-24) wrote to
+  `bot-logs/feedback.jsonl` and synced to the `droplet-telemetry` branch — feedback capture + telemetry confirmed end-to-end.
 - **Quality item (open):** the FirstRate5 **combination-window operability** answer is unstable — 60% in the
   original live thread vs 66.7%/67% in benchmarks. It's a genuine domain-convention question; needs a
   **definitive worked example ingested** to pin the bot to one number. Don't assume either value is right.
-- **Ingestion backlog (fillable from the repo now):** full NCC 2019 Vol 2 (beyond floors); BASIX
-  energy/thermal calculator xlsx; Bradnams glazing xlsx; NSW/VIC/SA climate-zone-map OCR; re-extract the
-  degraded NCC 2022 Housing Provisions R-value / glazing-factor tables. These now **auto-surface** in
-  `bot-logs/coverage-gaps-queue.md` + the weekly `#bot-ops` digest as the team actually hits them — ingest the
-  top item via the `#ingest` ✅ flow.
-- **Operator (non-repo) items:** $1,500 deposit invoice (signing trigger; see the operator's billing doc);
-  recurring commercial model = decide later.
+- **Ingestion backlog (fillable from the repo now):** full NCC 2019 Vol 2 (beyond floors); BASIX calculator
+  xlsx; Bradnams glazing xlsx; NSW/VIC/SA climate-zone-map OCR; re-extract the degraded NCC 2022 Housing
+  Provisions tables. These **auto-surface** in `bot-logs/coverage-gaps-queue.md` + the weekly `#bot-ops`
+  digest as the team hits them — ingest the top item via the `#ingest` ✅ flow.
 - **Needs external sourcing (flagged, not fetched):** SA/WA/NT Building Acts; SA/WA/VIC/TAS/NT NCC state
   schedules; ABCB Whole-of-Home Efficiency-Factor tables; NCC 2025 state-adoption timeline; Class 2 examples.
 - **Future token lever (not yet done):** audit-driven catalog pruning once `logs/fetch-stats.json` has a few
@@ -182,13 +161,15 @@ Reverse-chronological; see `wiki/log.md` for the wiki-level detail.
 ---
 
 ## 8. Pointers
-- `OBJECTIVE.md` — the self-learning loop's objective function + hard guardrails (anti-fabrication, scope, billing).
+- `OBJECTIVE.md` — the self-learning loop's objective function + hard guardrails.
 - `deploy/README.md` — droplet sync/digest setup + how the loop operates day-to-day.
-- `tools/deploy-sync.sh` — the auto-deploy + telemetry-push script (run by `nrg-sync.timer`).
-- `tools/mine-gaps.mjs` — mines `bot-logs/` → ranked `coverage-gaps-queue.md` + `metrics.json`.
-- `tools/post-digest.mjs` — posts the weekly `#bot-ops` digest (run by `nrg-digest.timer`).
+- `tools/` — `deploy-sync.sh` (auto-deploy + telemetry push), `mine-gaps.mjs` (gap ranking),
+  `post-digest.mjs` (weekly digest), `extract-raw-text.mjs`, `sync-wiki.mjs`, `bench-questions.txt`.
+- `OPERATIONS.md` — query/ingest/maintenance manual + the source-page template.
 - `wiki/CLAUDE.md` — how to answer from the wiki + ingest sources.
 - `wiki/coverage-gaps.md` — jurisdiction coverage matrix + prioritised gaps.
 - `wiki/log.md` — append-only operations log (ingests, changes).
-- `bot-logs/*.md` — the live Discord Q&A record (the test corpus).
+- `bot-logs/*.md` — the live Discord Q&A record (the test corpus). **Droplet-side only:** raw dailies are
+  gitignored; only `feedback.jsonl` + `coverage-gaps-queue.md` sync back via the `droplet-telemetry` branch,
+  so a fresh local checkout has no `bot-logs/` directory.
 - `README.md`, `DEPLOY_RUNBOOK.md`, `TEAM_ONBOARDING.md`, `LLM_BACKEND_OPTIONS.md` — ops/onboarding docs.
